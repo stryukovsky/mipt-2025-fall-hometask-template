@@ -8,7 +8,7 @@ import * as erc20 from './abi/erc20'
  * All USDC transfers since inception
  */
 const source = new PortalDataSource(
-    'https://portal.sqd.dev/datasets/ethereum-mainnet/stream',
+    'https://portal.sqd.dev/datasets/ethereum-mainnet/finalized-stream',
     {
         type: 'evm',
         fromBlock: 6_082_465, // Contract creation block
@@ -27,7 +27,7 @@ const source = new PortalDataSource(
         logs: [
             {
                 address: ['0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'],
-                topic0: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef']
+                topic0: [erc20.events.Transfer.topic]
             }
         ]
     }
@@ -50,19 +50,29 @@ runClickhouseProcessing({
                     contract: log.address,
                 }
 
-                data.balance_updates.push({
-                    ...common,
-                    account: from,
-                    counterparty: to,
-                    amount: (-value).toString()
-                })
+                if (from === to) {
+                    // transfer from self to self does not update the balance
+                    data.balance_updates.push({
+                        ...common,
+                        account: from,
+                        counterparty: to,
+                        amount: "0"
+                    })
+                } else {
+                    data.balance_updates.push({
+                        ...common,
+                        account: from,
+                        counterparty: to,
+                        amount: (-value).toString()
+                    })
 
-                data.balance_updates.push({
-                    ...common,
-                    account: to,
-                    counterparty: from,
-                    amount: value.toString()
-                })
+                    data.balance_updates.push({
+                        ...common,
+                        account: to,
+                        counterparty: from,
+                        amount: value.toString()
+                    })
+                }
             }
         }
         return data
