@@ -162,7 +162,7 @@ export class BlockWriter {
             }
             await Promise.all(flushes)
         } else {
-            // flush tables, that haven't been flushed for a long time
+            // flush tables that haven't been flushed for a long time
             let flushes: Promise<void>[] = []
             for (let name in this.tables) {
                 let writer = this.tables[name]

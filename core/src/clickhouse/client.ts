@@ -54,7 +54,7 @@ export class ClickhouseClient {
         return this.http.post('/', {query: q})
     }
 
-    command(query: string): Promise<void> {
-        return this.http.post('/', {query: {query}}).then(() => {})
+    async command(query: string): Promise<void> {
+        await this.http.post('/', {query: {query}})
     }
 }

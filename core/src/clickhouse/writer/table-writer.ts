@@ -11,12 +11,33 @@ import {BlockHeader} from './types'
 
 
 export interface TableOptions {
+    /**
+     * Minimum number of rows to write in a single query.
+     *
+     * This limit is soft.
+     * In particular, on each head block everything is flushed.
+     *
+     * Default: 1024 rows
+     */
     lowWaterMark?: number
+    /**
+     * Maximum number of rows to buffer before back-pressure mechanism will kick in.
+     *
+     * Default: 32000 rows
+     */
     highWaterMark?: number
+    /**
+     * Maximum duration of a single insert query.
+     *
+     * Default: 16 secs
+     */
     maxInsertDuration?: number
 }
 
 
+/**
+ * Responsible for managing insert queue and inserts into particular table.
+ */
 export class TableWriter extends EventEmitter {
     private commitHead?: BlockRef
     private queue = new RowQueue()
@@ -36,7 +57,7 @@ export class TableWriter extends EventEmitter {
     ) {
         super()
         this.lowWaterMark = options.lowWaterMark ?? 1024
-        this.highWaterMark = options.highWaterMark ?? 16 * 1024
+        this.highWaterMark = options.highWaterMark ?? 32000
         this.maxInsertDuration = options.maxInsertDuration ?? 16_000
 
         assert(this.lowWaterMark >= 0)

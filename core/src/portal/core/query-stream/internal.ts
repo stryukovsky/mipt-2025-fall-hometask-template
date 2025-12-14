@@ -393,7 +393,7 @@ class Processor<B extends BlockBase> {
 
         if (prev.length == 0 || this.lastBlockHash == null) return
 
-        // This condition accounts for possibility of gaps in the list of previous blocks
+        // This condition accounts for the possibility of gaps in the list of previous blocks
         if (hadBlocks && last(prev).number < this.lastBlockNumber) return
 
         this.finish(new ForkException(

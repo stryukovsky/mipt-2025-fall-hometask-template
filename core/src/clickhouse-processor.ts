@@ -25,25 +25,119 @@ export type GetDataSourceBlock<S> = S extends DataSource<infer B> ? B : never
 
 
 export interface ProcessorArgs<B, R> {
+    /**
+     * URL of the ClickHouse HTTP API.
+     */
     clickhouse: string
+    /**
+     * Database to store the resulting data in.
+     */
     clickhouseDatabase: string
+    /**
+     * Write options per table.
+     */
     clickhouseTables?: Record<string, TableOptions>
+    /**
+     * Data source.
+     */
     source: DataSource<B>
-    map: (block: B) => R
+    /**
+     * Data mapping function.
+     */
+    map: (block: B) => R | Promise<R>
 }
 
 
+/**
+ * Run data processing.
+ *
+ * This function works as the program entry point,
+ * it terminates the entire node process as soon as data processing terminates.
+ *
+ * Data processing comprises the following parts:
+ *
+ * 1. {@link DataSource} (passed as `args.source`) — responsible for fetching data starting from a given block
+ * 2. Data mapping function (passed as `args.map`) — responsible for mapping a block into
+ *    a set of rows to insert into the target database
+ * 3. ClickHouse database ([a unit](https://clickhouse.com/docs/sql-reference/statements/create/database))
+ *    (passed as `args.clickhouseDatabase`).
+ *
+ * The provided framework does not allow users to execute arbitrary DML statements;
+ * all produced data is append-only.
+ *
+ * The target database must have a certain structure.
+ *
+ * First, there must be a `blocks` table:
+ *
+ * ```sql
+ * CREATE TABLE blocks (
+ *     number UInt64, -- or UInt32
+ *     hash String, -- or FixedString(N)
+ *     parent_hash String, -- or FixedString(N)
+ *     -- parent_number UInt64, -- should be present only in Solana datasets
+ *     timestamp DateTime -- optional
+ * )
+ * ```
+ *
+ * It is used to store a list of completely processed blocks and is populated by the framework.
+ *
+ * All other members of the target database must be block item tables of the following structure:
+ *
+ * ```sql
+ * CREATE TABLE {block_item_name}
+ * (
+ *     block_number UInt64, -- or UInt32
+ *     block_hash String, -- or FixedString(N), this field is optional
+ *     block_timestamp DateTime -- this field is optional
+ *     -- other fields
+ * )
+ * ```
+ *
+ * `block_number`, `block_hash` and `block_timestamp` fields are populated by the framework.
+ * Rows themselves and their other fields come from a mapping function.
+ *
+ * All tables are persisted independently.
+ *
+ * For each table there are low/high-watermark options
+ * that regulate respectively the minimum number of rows to insert in a single query
+ * and the maximum number of rows to buffer before holding back the data production.
+ *
+ * Insertions to the `blocks` table are regulated in a similar fashion;
+ * however, watermark defaults are different:
+ *
+ *  * low watermark: `1024`
+ *  * high watermark: `4096`
+ *
+ * The framework produces rows for the 'blocks' table
+ * as data related to a given block becomes fully persisted.
+ *
+ * At the chain head low watermarks are ignored.
+ * Once the process reaches the chain head,
+ * all buffered data is always flushed and fully persisted.
+ *
+ * At the start of processing all rows related to partially written blocks
+ * are deleted with the `DELETE` statement.
+ *
+ * Similarly, in the case of a chain fork, the `DELETE` statement is used to delete
+ * all the rows related to roll-backed blocks.
+ */
 export function runClickhouseProcessing<B extends BlockBase, R extends {[P in keyof R]: object[]}>(args: ProcessorArgs<B, R>): void {
     runProgram(async () => {
         let clickhouse = new ClickhouseClient(args.clickhouse)
 
         let tableList = await inspectDatabase(clickhouse, args.clickhouseDatabase)
 
+        log.debug({tableList}, 'database inspection finished')
+
         let head = await clickhouse.query<BlockRef>(
             `SELECT number, hash FROM ${args.clickhouseDatabase}.blocks ORDER BY number DESC LIMIT 1`
         ).then(res => {
             return maybeLast(res.data)
         })
+
+        if (head) {
+            log.debug({head}, 'processing head')
+        }
 
         await clearPartialData(clickhouse, args.clickhouseDatabase, tableList, head)
 
@@ -73,7 +167,7 @@ export function runClickhouseProcessing<B extends BlockBase, R extends {[P in ke
                         tables
                     })
 
-                    // track number of inserted rows for performance stats
+                    // track the number of inserted rows for performance stats
                     nRows += 1
                     for (let table in tables) {
                         nRows += tables[table].length
@@ -114,10 +208,12 @@ async function clearPartialData(
     if (head) {
         for (let table of tableList) {
             await clickhouse.command(`DELETE FROM ${database}.${table} WHERE block_number > ${head.number}`)
+            log.debug(`cleared partial data in '${table}'`)
         }
     } else {
         for (let table of tableList) {
             await clickhouse.command(`DELETE FROM ${database}.${table} WHERE block_number >= 0`)
+            log.debug(`cleared '${table}'`)
         }
     }
 }

@@ -15,6 +15,8 @@ db:
 		--password 123
 
 
+# Generate data decoders from Solidity ABI files
+# Check `npx squid-evm-typegen --help` for more details.
 abi:
 	@npx squid-evm-typegen src/abi abi/*.json
 
