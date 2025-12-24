@@ -1,7 +1,12 @@
 import { runClickhouseProcessing } from "core/clickhouse-processor";
 import { Bytes20 } from "core/portal/data";
 import { PortalDataSource } from "core/portal/data-source";
+import Decimal from "decimal.js";
 
+const SLOT_LIQUIDITY =
+  "0x0000000000000000000000000000000000000000000000000000000000000004";
+const SLOT_0 =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
 const source = new PortalDataSource(
   "https://portal.sqd.dev/datasets/ethereum-mainnet/finalized-stream",
   {
@@ -22,9 +27,7 @@ const source = new PortalDataSource(
     stateDiffs: [
       {
         address: ["0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"],
-        key: [
-          "0x0000000000000000000000000000000000000000000000000000000000000004",
-        ],
+        key: [SLOT_LIQUIDITY, SLOT_0],
         // key: ["liquidity"],
         // kind: ["*"],
       },
@@ -32,63 +35,81 @@ const source = new PortalDataSource(
   },
 );
 
+function parsePrice(slot0Hex: string): string {
+  // Remove 0x prefix if present
+  const hex = slot0Hex.startsWith("0x") ? slot0Hex.slice(2) : slot0Hex;
+
+  // Pad to 64 characters (32 bytes) if needed
+  const paddedHex = hex.padStart(64, "0");
+
+  // Extract sqrtPriceX96 (first 160 bits = 20 bytes = 40 hex chars)
+  // Note: We need to read from the right side due to little-endian storage
+  const sqrtPriceX96Hex = paddedHex.slice(-40); // Last 40 chars (20 bytes)
+  const sqrtPriceX96 = BigInt("0x" + sqrtPriceX96Hex);
+  const Q96 = Decimal(2).pow(96);
+  // const Q192 = Q96 * Q96;
+
+  const numerator = sqrtPriceX96;
+
+  const price = Decimal(numerator).div(Decimal(Q96));
+
+  return price.pow(2).toString();
+}
+
 runClickhouseProcessing({
   clickhouse: "http://default:123@localhost:8123",
-  clickhouseDatabase: "u3_tlv_src",
+  clickhouseDatabase: "u3_tvl_src",
   source,
   map(block): Data {
     let data = new Data();
     if (block.stateDiffs !== undefined) {
-      const liquidityAtTheEndRaw = block.stateDiffs.map(
-        (entry) => entry.next,
-      )[0];
+      block.stateDiffs.forEach((entry) => {
+        if (entry.key == SLOT_LIQUIDITY) {
+          const amount = BigInt(entry.next!).toString();
+          const result = {
+            block_number: block.header.number,
+            block_timestamp: block.header.timestamp,
+            pool: entry.address,
+            amount,
+          };
+          console.log(result);
+          data.liquidity.push(result);
+        } else if (entry.key == SLOT_0) {
+          const priceValue = parsePrice(entry.next!);
 
-      if (liquidityAtTheEndRaw !== undefined) {
-        BigInt(liquidityAtTheEndRaw!!);
-      }
-      console.log(JSON.stringify(block.stateDiffs));
+          const result = {
+            block_number: block.header.number,
+            block_timestamp: block.header.timestamp,
+            pool: entry.address,
+            price: priceValue,
+          };
+          data.price.push(result);
+        } else {
+          console.warn(`Unknown entry key: ${entry.key}`);
+        }
+      });
     }
-    // for (let log of block.logs ?? []) {
-    //   if (erc20.events.Transfer.is(log)) {
-    //     let { from, to, value } = erc20.events.Transfer.decode(log);
-    //
-    //     let common = {
-    //       log_index: log.logIndex,
-    //       transaction_hash: log.transactionHash,
-    //       contract: log.address,
-    //     };
-    //
-    //     if (from === to) {
-    //       // transfer from self to self does not update the balance
-    //       data.balance_updates.push({
-    //         ...common,
-    //         account: from,
-    //         counterparty: to,
-    //         amount: "0",
-    //       });
-    //     } else {
-    //       data.balance_updates.push({
-    //         ...common,
-    //         account: from,
-    //         counterparty: to,
-    //         amount: (-value).toString(),
-    //       });
-    //
-    //       data.balance_updates.push({
-    //         ...common,
-    //         account: to,
-    //         counterparty: from,
-    //         amount: value.toString(),
-    //       });
-    //     }
-    //   }
-    // }
     return data;
   },
 });
 
 class Data {
-  // liquidity_change: TVLEntry[] = [];
+  liquidity: PoolRawLiquidity[] = [];
+  price: PoolRawPrice[] = [];
+}
+
+interface PoolRawLiquidity {
+  block_number: number;
+  block_timestamp: number;
+  pool: Bytes20;
+  amount: string;
+}
+
+interface PoolRawPrice {
+  block_number: number;
+  block_timestamp: number;
+  pool: Bytes20;
+  price: string;
 }
 
 interface TVLEntry {

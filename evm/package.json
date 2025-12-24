@@ -9,7 +9,9 @@
   "dependencies": {
     "@subsquid/evm-abi": "^0.3.1",
     "@subsquid/evm-codec": "^0.3.0",
-    "core": "workspace:*"
+    "core": "workspace:*",
+    "decimal.js": "^10.6.0",
+    "ethers": "^6.16.0"
   },
   "devDependencies": {
     "@subsquid/evm-typegen": "^4.3.0",
